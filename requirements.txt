@@ -9,3 +9,4 @@ numpy
 einops
 sentencepiece
 protobuf
+webdataset

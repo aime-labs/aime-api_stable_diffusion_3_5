@@ -7,6 +7,7 @@ import os
 import torch
 from torch import nn
 from transformers import CLIPTokenizer, T5TokenizerFast
+from einops import rearrange
 
 #################################################################################################
 ### Core/Utility
@@ -22,7 +23,6 @@ def attention(q, k, v, heads, mask=None):
         q, k, v, attn_mask=mask, dropout_p=0.0, is_causal=False
     )
     return out.transpose(1, 2).reshape(b, -1, heads * dim_head)
-
 
 class Mlp(nn.Module):
     """MLP as used in Vision Transformer, MLP-Mixer and related networks"""

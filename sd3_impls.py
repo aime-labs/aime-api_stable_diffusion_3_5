@@ -4,11 +4,16 @@ import math
 import re
 
 import einops
+from safetensors import safe_open
 import torch
 from PIL import Image
 from tqdm import tqdm
+import numpy as np
+import torch.nn as nn
 
+from dit_embedder import ControlNetEmbedder
 from mmditx import MMDiTX
+from typing import Tuple
 
 #################################################################################################
 ### MMDiT Model Wrapping
@@ -60,6 +65,7 @@ class BaseModel(torch.nn.Module):
         dtype=torch.float32,
         file=None,
         prefix="",
+        control_model_ckpt=None,
         verbose=False,
     ):
         super().__init__()
@@ -71,6 +77,7 @@ class BaseModel(torch.nn.Module):
         pos_embed_max_size = round(math.sqrt(num_patches))
         adm_in_channels = file.get_tensor(f"{prefix}y_embedder.mlp.0.weight").shape[1]
         context_shape = file.get_tensor(f"{prefix}context_embedder.weight").shape
+
         qk_norm = (
             "rms"
             if f"{prefix}joint_blocks.0.context_block.attn.ln_k.weight" in file.keys()
@@ -112,15 +119,62 @@ class BaseModel(torch.nn.Module):
             verbose=verbose,
         )
         self.model_sampling = ModelSamplingDiscreteFlow(shift=shift)
+        self.control_model = None
+        if control_model_ckpt is not None:
+            n_controlnet_layers = len(
+                list(
+                    filter(
+                        re.compile(".*.attn.proj.weight").match,
+                        control_model_ckpt.keys(),
+                    )
+                )
+            )
 
-    def apply_model(self, x, sigma, c_crossattn=None, y=None, skip_layers=[]):
+            hidden_size = 64 * depth
+            num_heads = depth
+            head_dim = hidden_size // num_heads
+            pooled_projection_size = control_model_ckpt.get_tensor('time_text_embed.text_embedder.linear_1.weight').shape[1]
+            if verbose:
+                print(
+                    f"Initializing ControlNetEmbedder with {n_controlnet_layers} layers, y_in of {pooled_projection_size}"
+                )
+            self.control_model = ControlNetEmbedder(
+                img_size=None,
+                patch_size=patch_size,
+                in_chans=16,
+                num_layers=n_controlnet_layers,
+                attention_head_dim=head_dim,
+                num_attention_heads=num_heads,
+                pooled_projection_size=pooled_projection_size,
+                device=device,
+                dtype=dtype,
+            )
+
+    def apply_model(self, x, sigma, c_crossattn=None, y=None, skip_layers=[], controlnet_cond=None):
         dtype = self.get_dtype()
         timestep = self.model_sampling.timestep(sigma).float()
+        controlnet_hidden_states = None
+        if controlnet_cond is not None:
+            y_cond = y.to(dtype)
+            controlnet_cond = controlnet_cond.to(dtype=x.dtype, device=x.device)
+            controlnet_cond = controlnet_cond.repeat(x.shape[0], 1, 1, 1)
+
+            if not self.control_model.using_8b_controlnet:
+                y_cond = self.diffusion_model.y_embedder(y)
+            
+            x_controlnet = x
+            if self.control_model.using_8b_controlnet:
+                hw = x.shape[-2:]
+                x_controlnet = self.diffusion_model.x_embedder(x) + self.diffusion_model.cropped_pos_embed(hw)
+            controlnet_hidden_states = self.control_model(
+                x_controlnet, controlnet_cond, y_cond, 1, sigma.to(torch.float32)
+            )
         model_output = self.diffusion_model(
             x.to(dtype),
             timestep,
             context=c_crossattn.to(dtype),
             y=y.to(dtype),
+            controlnet_hidden_states=controlnet_hidden_states,
             skip_layers=skip_layers,
         ).float()
         return self.model_sampling.calculate_denoised(sigma, model_output, x)
@@ -146,6 +200,7 @@ class CFGDenoiser(torch.nn.Module):
         cond,
         uncond,
         cond_scale,
+        **kwargs,
     ):
         # Run cond and uncond in a batch together
         batched = self.model.apply_model(
@@ -153,6 +208,7 @@ class CFGDenoiser(torch.nn.Module):
             torch.cat([timestep, timestep]),
             c_crossattn=torch.cat([cond["c_crossattn"], uncond["c_crossattn"]]),
             y=torch.cat([cond["y"], uncond["y"]]),
+            **kwargs,
         )
         # Then split and apply CFG Scaling
         pos_out, neg_out = batched.chunk(2)
@@ -180,6 +236,7 @@ class SkipLayerCFGDenoiser(torch.nn.Module):
         cond,
         uncond,
         cond_scale,
+        **kwargs,
     ):
         # Run cond and uncond in a batch together
         batched = self.model.apply_model(
@@ -187,6 +244,7 @@ class SkipLayerCFGDenoiser(torch.nn.Module):
             torch.cat([timestep, timestep]),
             c_crossattn=torch.cat([cond["c_crossattn"], uncond["c_crossattn"]]),
             y=torch.cat([cond["y"], uncond["y"]]),
+            **kwargs,
         )
         # Then split and apply CFG Scaling
         pos_out, neg_out = batched.chunk(2)
@@ -682,3 +740,4 @@ class SDVAE(torch.nn.Module):
         logvar = torch.clamp(logvar, -30.0, 20.0)
         std = torch.exp(0.5 * logvar)
         return mean + std * torch.randn_like(mean)
+

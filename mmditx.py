@@ -217,7 +217,6 @@ def optimized_attention(qkv, num_heads):
 
 
 class SelfAttention(nn.Module):
-    ATTENTION_MODES = ("xformers", "torch", "torch-hb", "math", "debug")
 
     def __init__(
         self,
@@ -225,7 +224,6 @@ class SelfAttention(nn.Module):
         num_heads: int = 8,
         qkv_bias: bool = False,
         qk_scale: Optional[float] = None,
-        attn_mode: str = "xformers",
         pre_only: bool = False,
         qk_norm: Optional[str] = None,
         rmsnorm: bool = False,
@@ -239,8 +237,6 @@ class SelfAttention(nn.Module):
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias, dtype=dtype, device=device)
         if not pre_only:
             self.proj = nn.Linear(dim, dim, dtype=dtype, device=device)
-        assert attn_mode in self.ATTENTION_MODES
-        self.attn_mode = attn_mode
         self.pre_only = pre_only
 
         if qk_norm == "rms":
@@ -391,14 +387,11 @@ class SwiGLUFeedForward(nn.Module):
 class DismantledBlock(nn.Module):
     """A DiT block with gated adaptive layer norm (adaLN) conditioning."""
 
-    ATTENTION_MODES = ("xformers", "torch", "torch-hb", "math", "debug")
-
     def __init__(
         self,
         hidden_size: int,
         num_heads: int,
         mlp_ratio: float = 4.0,
-        attn_mode: str = "xformers",
         qkv_bias: bool = False,
         pre_only: bool = False,
         rmsnorm: bool = False,
@@ -411,7 +404,6 @@ class DismantledBlock(nn.Module):
         **block_kwargs,
     ):
         super().__init__()
-        assert attn_mode in self.ATTENTION_MODES
         if not rmsnorm:
             self.norm1 = nn.LayerNorm(
                 hidden_size,
@@ -426,7 +418,6 @@ class DismantledBlock(nn.Module):
             dim=hidden_size,
             num_heads=num_heads,
             qkv_bias=qkv_bias,
-            attn_mode=attn_mode,
             pre_only=pre_only,
             qk_norm=qk_norm,
             rmsnorm=rmsnorm,
@@ -441,7 +432,6 @@ class DismantledBlock(nn.Module):
                 dim=hidden_size,
                 num_heads=num_heads,
                 qkv_bias=qkv_bias,
-                attn_mode=attn_mode,
                 pre_only=False,
                 qk_norm=qk_norm,
                 rmsnorm=rmsnorm,
@@ -716,7 +706,6 @@ class MMDiTX(nn.Module):
         adm_in_channels: Optional[int] = None,
         context_embedder_config: Optional[Dict] = None,
         register_length: int = 0,
-        attn_mode: str = "torch",
         rmsnorm: bool = False,
         scale_mod_only: bool = False,
         swiglu: bool = False,
@@ -735,7 +724,7 @@ class MMDiTX(nn.Module):
         super().__init__()
         if verbose:
             print(
-                f"mmdit initializing with: {input_size=}, {patch_size=}, {in_channels=}, {depth=}, {mlp_ratio=}, {learn_sigma=}, {adm_in_channels=}, {context_embedder_config=}, {register_length=}, {attn_mode=}, {rmsnorm=}, {scale_mod_only=}, {swiglu=}, {out_channels=}, {pos_embed_scaling_factor=}, {pos_embed_offset=}, {pos_embed_max_size=}, {num_patches=}, {qk_norm=}, {qkv_bias=}, {dtype=}, {device=}"
+                f"mmdit initializing with: {input_size=}, {patch_size=}, {in_channels=}, {depth=}, {mlp_ratio=}, {learn_sigma=}, {adm_in_channels=}, {context_embedder_config=}, {register_length=}, {rmsnorm=}, {scale_mod_only=}, {swiglu=}, {out_channels=}, {pos_embed_scaling_factor=}, {pos_embed_offset=}, {pos_embed_max_size=}, {num_patches=}, {qk_norm=}, {qkv_bias=}, {dtype=}, {device=}"
             )
         self.dtype = dtype
         self.learn_sigma = learn_sigma
@@ -805,7 +794,6 @@ class MMDiTX(nn.Module):
                     num_heads,
                     mlp_ratio=mlp_ratio,
                     qkv_bias=qkv_bias,
-                    attn_mode=attn_mode,
                     pre_only=i == depth - 1,
                     rmsnorm=rmsnorm,
                     scale_mod_only=scale_mod_only,
@@ -870,6 +858,7 @@ class MMDiTX(nn.Module):
         c_mod: torch.Tensor,
         context: Optional[torch.Tensor] = None,
         skip_layers: Optional[List] = [],
+        controlnet_hidden_states: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         if self.register_length > 0:
             context = torch.cat(
@@ -886,6 +875,11 @@ class MMDiTX(nn.Module):
             if i in skip_layers:
                 continue
             context, x = block(context, x, c=c_mod)
+            if controlnet_hidden_states is not None:
+                controlnet_block_interval = len(self.joint_blocks) // len(
+                    controlnet_hidden_states
+                )
+                x = x + controlnet_hidden_states[i // controlnet_block_interval]
 
         x = self.final_layer(x, c_mod)  # (N, T, patch_size ** 2 * out_channels)
         return x
@@ -896,6 +890,7 @@ class MMDiTX(nn.Module):
         t: torch.Tensor,
         y: Optional[torch.Tensor] = None,
         context: Optional[torch.Tensor] = None,
+        controlnet_hidden_states: Optional[torch.Tensor] = None,
         skip_layers: Optional[List] = [],
     ) -> torch.Tensor:
         """
@@ -913,7 +908,7 @@ class MMDiTX(nn.Module):
 
         context = self.context_embedder(context)
 
-        x = self.forward_core_with_concat(x, c, context, skip_layers)
+        x = self.forward_core_with_concat(x, c, context, skip_layers, controlnet_hidden_states)
 
         x = self.unpatchify(x, hw=hw)  # (N, out_channels, H, W)
         return x
