@@ -126,7 +126,7 @@ T5_CONFIG = {
 class T5XXL:
     def __init__(self, model_folder: str, device: str = "cpu", dtype=torch.float32):
         with safe_open(
-            f"{model_folder}/t5xxl.safetensors", framework="pt", device="cpu"
+            f"{model_folder}/t5xxl_fp16.safetensors", framework="pt", device="cpu"
         ) as f:
             self.model = T5XXLModel(T5_CONFIG, device=device, dtype=dtype)
             load_into(f, self.model.transformer, "", device, dtype)
@@ -214,6 +214,7 @@ WIDTH = 1024
 HEIGHT = 1024
 # Pick your prompt
 PROMPT = "a photo of a cat"
+NEG_PROMPT = ""
 # Most models prefer the range of 4-5, but still work well around 7
 CFG_SCALE = 4.5
 # Different models want different step counts but most will be good at 50, albeit that's slow to run
@@ -316,7 +317,7 @@ class SD3Inferencer:
             device="cpu",
         ).to(latent.dtype)
 
-    def get_cond(self, prompt):
+    def get_cond(self, prompt, num_samples):
         self.print("Encode prompt...")
         tokens = self.tokenizer.tokenize_with_weights(prompt)
         l_out, l_pooled = self.clip_l.model.encode_token_weights(tokens["l"])
@@ -324,9 +325,7 @@ class SD3Inferencer:
         t5_out, t5_pooled = self.t5xxl.model.encode_token_weights(tokens["t5xxl"])
         lg_out = torch.cat([l_out, g_out], dim=-1)
         lg_out = torch.nn.functional.pad(lg_out, (0, 4096 - lg_out.shape[-1]))
-        return torch.cat([lg_out, t5_out], dim=-2), torch.cat(
-            (l_pooled, g_pooled), dim=-1
-        )
+        return torch.cat([lg_out, t5_out], dim=-2).repeat(num_samples, 1, 1), torch.cat((l_pooled, g_pooled), dim=-1).repeat(num_samples, 1)
 
     def max_denoise(self, sigmas):
         max_sigma = float(self.sd3.model.model_sampling.sigma_max)
@@ -349,8 +348,9 @@ class SD3Inferencer:
         controlnet_cond=None,
         denoise=1.0,
         skip_layer_config={},
+        callback=None,
     ) -> torch.Tensor:
-        self.print("Sampling...")
+        callback(latent, 3, False, message="Sampling...")
         latent = latent.half().cuda()
         self.sd3.model = self.sd3.model.cuda()
         noise = self.get_noise(seed, latent).cuda()
@@ -378,10 +378,12 @@ class SD3Inferencer:
             noise_scaled,
             sigmas,
             extra_args=extra_args,
+            callback=callback
         )
         latent = SD3LatentFormat().process_out(latent)
         self.sd3.model = self.sd3.model.cpu()
-        self.print("Sampling done")
+
+        callback(latent, 4, True, message="Sampling done")
         return latent
 
     def vae_encode(
@@ -412,18 +414,21 @@ class SD3Inferencer:
         return latent
 
     def vae_decode(self, latent) -> Image.Image:
-        self.print("Decoding latent to image...")
+        print("Decoding latent to image...", end='', flush=True)
         latent = latent.cuda()
         self.vae.model = self.vae.model.cuda()
-        image = self.vae.model.decode(latent)
-        image = image.float()
+        images = self.vae.model.decode(latent)
+        images = images.float()
         self.vae.model = self.vae.model.cpu()
-        image = torch.clamp((image + 1.0) / 2.0, min=0.0, max=1.0)[0]
-        decoded_np = 255.0 * np.moveaxis(image.cpu().numpy(), 0, 2)
-        decoded_np = decoded_np.astype(np.uint8)
-        out_image = Image.fromarray(decoded_np)
-        self.print("Decoded")
-        return out_image
+        images = torch.clamp((images + 1.0) / 2.0, min=0.0, max=1.0)
+
+        image_list = list()
+        for image in images:
+            decoded_np = 255.0 * np.moveaxis(image.cpu().numpy(), 0, 2)
+            decoded_np = decoded_np.astype(np.uint8)
+            image_list.append(Image.fromarray(decoded_np))
+        print("Done")
+        return image_list
 
     def _image_to_latent(
         self,
@@ -433,15 +438,22 @@ class SD3Inferencer:
         using_2b_controlnet: bool = False,
         controlnet_type: int = 0,
     ) -> torch.Tensor:
-        image_data = Image.open(image)
+        if isinstance(image, str):  # If `image` is a file path
+            image_data = Image.open(image)
+        elif isinstance(image, Image.Image):  # If `image` is already a PIL Image
+            image_data = image
+        else:
+            raise ValueError("Unsupported image input type. Expected file path or PIL Image.")
         image_data = image_data.resize((width, height), Image.LANCZOS)
         latent = self.vae_encode(image_data, using_2b_controlnet, controlnet_type)
         latent = SD3LatentFormat().process_in(latent)
         return latent
 
+
     def gen_image(
         self,
-        prompts=[PROMPT],
+        batch_size,
+        prompts=PROMPT,
         width=WIDTH,
         height=HEIGHT,
         steps=STEPS,
@@ -453,15 +465,28 @@ class SD3Inferencer:
         controlnet_cond_image=CONTROLNET_COND_IMAGE,
         init_image=INIT_IMAGE,
         denoise=DENOISE,
+        negative_prompt= [NEG_PROMPT],
         skip_layer_config={},
+        callback=None,
     ):
         controlnet_cond = None
+        
         if init_image:
+            message = "Denoising input image..."
+            if callback:
+                callback(None, 0, False, message=message)
             latent = self._image_to_latent(init_image, width, height)
         else:
-            latent = self.get_empty_latent(1, width, height, seed, "cpu")
+            message = "Generating empty latent image..."
+            if callback:
+                callback(None, 0, False, message=message)
+            latent = self.get_empty_latent(batch_size, width, height, seed, "cpu")
             latent = latent.cuda()
+
         if controlnet_cond_image:
+            message = "Encoding controlnet condition image..."
+            if callback:
+                callback(None, 0, False, message=message)
             using_2b, control_type = False, 0
             if self.sd3.model.control_model is not None:
                 using_2b = not self.sd3.using_8b_controlnet
@@ -469,34 +494,46 @@ class SD3Inferencer:
             controlnet_cond = self._image_to_latent(
                 controlnet_cond_image, width, height, using_2b, control_type
             )
-        neg_cond = self.get_cond("")
+        if callback:
+            callback(latent, 1, False, message="Encoding negative prompt...")
+        neg_cond = self.get_cond(negative_prompt, batch_size)
+        
         seed_num = None
-        pbar = tqdm(enumerate(prompts), total=len(prompts), position=0, leave=True)
-        for i, prompt in pbar:
-            if seed_type == "roll":
-                seed_num = seed if seed_num is None else seed_num + 1
-            elif seed_type == "rand":
-                seed_num = torch.randint(0, 100000, (1,)).item()
-            else:  # fixed
-                seed_num = seed
-            conditioning = self.get_cond(prompt)
-            sampled_latent = self.do_sampling(
-                latent,
-                seed_num,
-                conditioning,
-                neg_cond,
-                steps,
-                cfg_scale,
-                sampler,
-                controlnet_cond,
-                denoise if init_image else 1.0,
-                skip_layer_config,
-            )
-            image = self.vae_decode(sampled_latent)
-            save_path = os.path.join(out_dir, f"{i:06d}.png")
-            self.print(f"Saving to to {save_path}")
-            image.save(save_path)
-            self.print("Done")
+        # pbar = tqdm(enumerate(prompts), total=len(prompts), position=0, leave=True)
+        # for i, prompt in pbar:
+        if seed_type == "roll":
+            seed_num = seed if seed_num is None else seed_num + 1
+        elif seed_type == "rand":
+            seed_num = torch.randint(0, 100000, (1,)).item()
+        else:
+            seed_num = seed
+
+        if callback:
+            callback(latent, 2, False, message="Encoding prompt...")
+        conditioning = self.get_cond(prompts, batch_size)
+
+        sampled_latent = self.do_sampling(
+            latent,
+            seed_num,
+            conditioning,
+            neg_cond,
+            steps,
+            cfg_scale,
+            sampler,
+            controlnet_cond,
+            denoise if init_image else 1.0,
+            skip_layer_config,
+            callback,
+        )
+
+        if callback:
+            callback(sampled_latent, 5, False, message="Decoding latent image...")
+            # image = self.vae_decode(sampled_latent)
+
+            # save_path = os.path.join(out_dir, f"{i:06d}.png")
+            # self.print(f"Saving to {save_path}")
+            # image.save(save_path)
+            # self.print("Done")
 
 
 CONFIGS = {

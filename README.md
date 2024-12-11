@@ -1,17 +1,13 @@
-# Stable Diffusion 3.5
+# Stable Diffusion 3.5 - AIME Demo
 
-Inference-only tiny reference implementation of SD3.5 and SD3 - everything you need for simple inference using SD3.5/SD3, as well as the SD3.5 Large ControlNets, excluding the weights files.
+[Stable Diffusion 3.5 Large](https://stability.ai/news/introducing-stable-diffusion-3-5) is a Multimodal Diffusion Transformer (MMDiT) text-to-image model that features improved performance in image quality, typography, complex prompt understanding, and resource-efficiency.
 
-Contains code for the text encoders (OpenAI CLIP-L/14, OpenCLIP bigG, Google T5-XXL) (these models are all public), the VAE Decoder (similar to previous SD models, but 16-channels and no postquantconv step), and the core MM-DiT (entirely new).
+This is an inference-only reference implementation of Stable Diffusion 3.5. This version is optimized for integration with the AIME API Server for easy deployment and scaling of image generation tasks.
 
-Note: this repo is a reference library meant to assist partner organizations in implementing SD3.5/SD3. For alternate inference, use [Comfy](https://github.com/comfyanonymous/ComfyUI).
-
-## Updates
-
-- Nov 26, 2024 : Released ControlNets for SD3.5-Large.
-- Oct 29, 2024 : Released inference code for SD3.5-Medium.
-- Oct 24, 2024 : Updated code license to MIT License.
-- Oct 22, 2024 : Released inference code for SD3.5-Large, Large-Turbo. Also works on SD3-Medium.
+- Ready to use as a worker for the [AIME API Server](https://github.com/aime-team/aime-api-server)
+- Added possibility to generate multiple images at once
+- Preview images while processing
+- Text to Image and Image to Image
 
 ## Download
 
@@ -26,9 +22,9 @@ This code also works for [Stability AI SD3 Medium](https://huggingface.co/stabil
 ### ControlNets
 
 Optionally, download [SD3.5 Large ControlNets](https://huggingface.co/stabilityai/stable-diffusion-3.5-controlnets):
-- [Blur ControlNet](https://huggingface.co/stabilityai/stable-diffusion-3.5-controlnets/resolve/main/blur_8b.safetensors)
-- [Canny ControlNet](https://huggingface.co/stabilityai/stable-diffusion-3.5-controlnets/resolve/main/canny_8b.safetensors)
-- [Depth ControlNet](https://huggingface.co/stabilityai/stable-diffusion-3.5-controlnets/resolve/main/depth_8b.safetensors)
+- [Blur ControlNet](https://huggingface.co/stabilityai/stable-diffusion-3.5-controlnets/blob/main/sd3.5_large_controlnet_blur.safetensors)
+- [Canny ControlNet](https://huggingface.co/stabilityai/stable-diffusion-3.5-controlnets/blob/main/sd3.5_large_controlnet_canny.safetensors)
+- [Depth ControlNet](https://huggingface.co/stabilityai/stable-diffusion-3.5-controlnets/blob/main/sd3.5_large_controlnet_depth.safetensors)
 
 ```py
 from huggingface_hub import hf_hub_download
@@ -37,61 +33,51 @@ hf_hub_download("stabilityai/stable-diffusion-3.5-controlnets", "sd3.5_large_con
 hf_hub_download("stabilityai/stable-diffusion-3.5-controlnets", "sd3.5_large_controlnet_depth.safetensors", local_dir="models")
 ```
 
-## Install
+### Or
 
 ```sh
-# Note: on windows use "python" not "python3"
-python3 -s -m venv .sd3.5
-source .sd3.5/bin/activate
-# or on windows: venv/scripts/activate
-python3 -s -m pip install -r requirements.txt
+sudo apt-get install git-lfs
+git lfs install
+mkdir /destination/to/checkpoints
+cd /destination/to/checkpoints
+git clone https://huggingface.co/stabilityai/stable-diffusion-3.5-large
 ```
 
-## Run
+## Clone this repo
+```sh
+cd /destination/to/repo
+git clone https://github.com/aime-labs/aime-api_stable_diffusion_3_5.git
+```
+
+## Setting up AIME MLC
+```sh
+
+mlc-create sd3-5 Pytorch 2.3.1-aime -d="/destination/to/checkpoints" -w="/destination/to/repo"
+```
+The -d flag will mount /destination/to/checkpoints to /data in the container. 
+
+The -w flag will mount /destination/to/repo to /workspace in the container.
+
+
+## Install requirements in AIME MLC
+```sh
+mlc-open sd3-5
+
+pip install -r /workspace/aime-api_stable_diffusion_3_5/requirements.txt
+```
+
+## Run SD3.5 inference as HTTP/HTTPS API with AIME API Server
+
+To run Stable Diffusion 3.5 as HTTP/HTTPS API with [AIME API Server](https://github.com/aime-team/aime-api-server) start the chat command with following command line:
 
 ```sh
-# Generate a cat using SD3.5 Large model (at models/sd3.5_large.safetensors) with its default settings
-python3 sd3_infer.py --prompt "cute wallpaper art of a cat"
-# Or use a text file with a list of prompts, using SD3.5 Large
-python3 sd3_infer.py --prompt path/to/my_prompts.txt --model models/sd3.5_large.safetensors
-# Generate from prompt file using SD3.5 Large Turbo with its default settings
-python3 sd3_infer.py --prompt path/to/my_prompts.txt --model models/sd3.5_large_turbo.safetensors
-# Generate from prompt file using SD3.5 Medium with its default settings, at 2k resolution
-python3 sd3_infer.py --prompt path/to/my_prompts.txt --model models/sd3.5_medium.safetensors --width 1920 --height 1080
-# Generate from prompt file using SD3 Medium with its default settings
-python3 sd3_infer.py --prompt path/to/my_prompts.txt --model models/sd3_medium.safetensors
+mlc-open sd3.5
+
+python3 /workspace/aime-api_stable_diffusion_3_5/main.py --api_server <url to API server>
 ```
 
-Images will be output to `outputs/<MODEL>/<PROMPT>_<DATETIME>_<POSTFIX>` by default.
-To add a postfix to the output directory, add `--postfix <my_postfix>`. For example,
-```sh
-python3 sd3_infer.py --prompt path/to/my_prompts.txt --postfix "steps100" --steps 100
-```
+It will start Stable Diffusion 3 as worker, waiting for job request through the AIME API Server.
 
-To change the resolution of the generated image, add `--width <WIDTH> --height <HEIGHT>`.
-
-Optionally, use [Skip Layer Guidance](https://github.com/comfyanonymous/ComfyUI/pull/5404) for potentially better struture and anatomy coherency from SD3.5-Medium.
-```sh
-python3 sd3_infer.py --prompt path/to/my_prompts.txt --model models/sd3.5_medium.safetensors --skip_layer_cfg True
-```
-
-### ControlNets
-
-To use SD3.5 Large ControlNets, additionally download your chosen ControlNet model from the [model repository](https://huggingface.co/stabilityai/stable-diffusion-3.5-controlnets), then run inference, like so:
-- Blur:
-```sh
-python sd3_infer.py --model models/sd3.5_large.safetensors --controlnet_ckpt models/sd3.5_large_controlnet_blur.safetensors --controlnet_cond_image inputs/blur.png --prompt "generated ai art, a tiny, lost rubber ducky in an action shot close-up, surfing the humongous waves, inside the tube, in the style of Kelly Slater"
-```
-- Canny:
-```sh
-python sd3_infer.py --model models/sd3.5_large.safetensors --controlnet_ckpt models/sd3.5_large_controlnet_canny.safetensors --controlnet_cond_image inputs/canny.png --prompt "A Night time photo taken by Leica M11, portrait of a Japanese woman in a kimono, looking at the camera, Cherry blossoms"
-```
-- Depth:
-```sh
-python sd3_infer.py --model models/sd3.5_large.safetensors --controlnet_ckpt models/sd3.5_large_controlnet_depth.safetensors --controlnet_cond_image inputs/depth.png --prompt "photo of woman, presumably in her mid-thirties, striking a balanced yoga pose on a rocky outcrop during dusk or dawn. She wears a light gray t-shirt and dark leggings. Her pose is dynamic, with one leg extended backward and the other bent at the knee, holding the moon close to her hand."
-```
-
-For details on preprocessing for each of the ControlNets, and examples, please review the [model card](https://huggingface.co/stabilityai/stable-diffusion-3.5-controlnets).
 
 ## File Guide
 
@@ -99,6 +85,7 @@ For details on preprocessing for each of the ControlNets, and examples, please r
 - `sd3_impls.py` - contains the wrapper around the MMDiTX and the VAE
 - `other_impls.py` - contains the CLIP models, the T5 model, and some utilities
 - `mmditx.py` - contains the core of the MMDiT-X itself
+- `main.py`
 - folder `models` with the following files (download separately):
     - `clip_l.safetensors` (OpenAI CLIP-L, same as SDXL/SD3, can grab a public copy)
     - `clip_g.safetensors` (openclip bigG, same as SDXL/SD3, can grab a public copy)
@@ -114,9 +101,14 @@ The code included here originates from:
 - Some code from ComfyUI internal Stability implementation of SD3 (for some code corrections and handlers)
 - HuggingFace and upstream providers (for sections of CLIP/T5 code)
 
-## Legal
+## License
 
-Check the LICENSE-CODE file.
+This model is available under the [Stability AI Community License](https://stability.ai/community-license-agreement):
+- Non-commercial Use: Free for non-commercial projects and research.
+- Commercial Use: Free if your company’s annual revenue is less than $1 million.
+- Ownership of Outputs: You own the images you generate.
+
+Please review the [full license terms](https://stability.ai/community-license-agreement) for more information.
 
 ### Note
 

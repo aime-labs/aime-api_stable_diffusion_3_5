@@ -304,16 +304,17 @@ class SD3LatentFormat:
             ],
             device="cpu",
         )
-        latent_image = x0[0].permute(1, 2, 0).cpu() @ factors
+        image_list = list()
+        for x in x0:
 
-        latents_ubyte = (
-            ((latent_image + 1) / 2)
-            .clamp(0, 1)  # change scale from -1..1 to 0..1
-            .mul(0xFF)  # to 0..255
-            .byte()
-        ).cpu()
+            latent_image = x.permute(1, 2, 0).cpu() @ factors
 
-        return Image.fromarray(latents_ubyte.numpy())
+            latents_ubyte = (((latent_image + 1) / 2)
+                            .clamp(0, 1)  # change scale from -1..1 to 0..1
+                            .mul(0xFF)  # to 0..255
+                            .byte()).cpu()
+            image_list.append(Image.fromarray(latents_ubyte.numpy()))
+        return image_list
 
 
 #################################################################################################
@@ -334,7 +335,7 @@ def to_d(x, sigma, denoised):
 
 @torch.no_grad()
 @torch.autocast("cuda", dtype=torch.float16)
-def sample_euler(model, x, sigmas, extra_args=None):
+def sample_euler(model, x, sigmas, extra_args=None, callback=None):
     """Implements Algorithm 2 (Euler steps) from Karras et al. (2022)."""
     extra_args = {} if extra_args is None else extra_args
     s_in = x.new_ones([x.shape[0]])
@@ -345,12 +346,14 @@ def sample_euler(model, x, sigmas, extra_args=None):
         dt = sigmas[i + 1] - sigma_hat
         # Euler method
         x = x + d * dt
+        if callback:
+            callback(x, i + 1, False)
     return x
 
 
 @torch.no_grad()
 @torch.autocast("cuda", dtype=torch.float16)
-def sample_dpmpp_2m(model, x, sigmas, extra_args=None):
+def sample_dpmpp_2m(model, x, sigmas, extra_args=None, callback=None):
     """DPM-Solver++(2M)."""
     extra_args = {} if extra_args is None else extra_args
     s_in = x.new_ones([x.shape[0]])
@@ -369,6 +372,8 @@ def sample_dpmpp_2m(model, x, sigmas, extra_args=None):
             denoised_d = (1 + 1 / (2 * r)) * denoised - (1 / (2 * r)) * old_denoised
             x = (sigma_fn(t_next) / sigma_fn(t)) * x - (-h).expm1() * denoised_d
         old_denoised = denoised
+        if callback:
+            callback(x, i + 1, False)
     return x
 
 

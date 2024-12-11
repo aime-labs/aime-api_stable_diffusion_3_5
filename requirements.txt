@@ -10,3 +10,4 @@ einops
 sentencepiece
 protobuf
 webdataset
+aime_api_worker_interface @ git+https://github.com//aime-team/aime-api-worker-interface
