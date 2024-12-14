@@ -14,7 +14,7 @@ from sd3_impls import SD3LatentFormat
 
 from aime_api_worker_interface import APIWorkerInterface
 
-WORKER_JOB_TYPE = "stable_diffusion_3.5"
+WORKER_JOB_TYPE = "stable_diffusion_3_5"
 DEFAULT_WORKER_AUTH_KEY = "5b07e305b50505ca2b3284b4ae5f65d7"
 VERSION = 0
 
