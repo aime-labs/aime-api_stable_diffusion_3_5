@@ -7,10 +7,12 @@
 # - `sd3_vae.safetensors` (holds the VAE separately if needed)
 
 import datetime
+import io
 import math
 import os
 import pickle
 import re
+import time
 
 import fire
 import numpy as np
@@ -82,7 +84,9 @@ CLIPG_CONFIG = {
 class ClipG:
     def __init__(self, model_folder: str, device: str = "cpu"):
         with safe_open(
-            f"{model_folder}/clip_g.safetensors", framework="pt", device="cpu"
+            f"{model_folder}/text_encoders/clip_g.safetensors",
+            framework="pt",
+            device="cpu",
         ) as f:
             self.model = SDXLClipG(CLIPG_CONFIG, device=device, dtype=torch.float32)
             load_into(f, self.model.transformer, "", device, torch.float32)
@@ -100,7 +104,9 @@ CLIPL_CONFIG = {
 class ClipL:
     def __init__(self, model_folder: str):
         with safe_open(
-            f"{model_folder}/clip_l.safetensors", framework="pt", device="cpu"
+            f"{model_folder}/text_encoders/clip_l.safetensors",
+            framework="pt",
+            device="cpu",
         ) as f:
             self.model = SDClipModel(
                 layer="hidden",
@@ -126,7 +132,9 @@ T5_CONFIG = {
 class T5XXL:
     def __init__(self, model_folder: str, device: str = "cpu", dtype=torch.float32):
         with safe_open(
-            f"{model_folder}/t5xxl_fp16.safetensors", framework="pt", device="cpu"
+            f"{model_folder}/text_encoders/t5xxl_fp16.safetensors",
+            framework="pt",
+            device="cpu",
         ) as f:
             self.model = T5XXLModel(T5_CONFIG, device=device, dtype=dtype)
             load_into(f, self.model.transformer, "", device, dtype)
@@ -228,7 +236,7 @@ SEEDTYPE = "rand"
 # Actual model file path
 # MODEL = "models/sd3_medium.safetensors"
 # MODEL = "models/sd3.5_large_turbo.safetensors"
-MODEL = "models/sd3.5_large.safetensors"
+MODEL = "sd3.5_large.safetensors"
 # VAE model file path, or set None to use the same model file
 VAEFile = None  # "models/sd3_vae.safetensors"
 # Optional init image file path
@@ -242,7 +250,7 @@ OUTDIR = "outputs"
 # SAMPLER
 SAMPLER = "dpmpp_2m"
 # MODEL FOLDER
-MODEL_FOLDER = "models"
+MODEL_FOLDER = ""
 
 
 class SD3Inferencer:
@@ -325,7 +333,9 @@ class SD3Inferencer:
         t5_out, t5_pooled = self.t5xxl.model.encode_token_weights(tokens["t5xxl"])
         lg_out = torch.cat([l_out, g_out], dim=-1)
         lg_out = torch.nn.functional.pad(lg_out, (0, 4096 - lg_out.shape[-1]))
-        return torch.cat([lg_out, t5_out], dim=-2).repeat(num_samples, 1, 1), torch.cat((l_pooled, g_pooled), dim=-1).repeat(num_samples, 1)
+        return torch.cat([lg_out, t5_out], dim=-2).repeat(num_samples, 1, 1), torch.cat(
+            (l_pooled, g_pooled), dim=-1
+        ).repeat(num_samples, 1)
 
     def max_denoise(self, sigmas):
         max_sigma = float(self.sd3.model.model_sampling.sigma_max)
@@ -378,12 +388,12 @@ class SD3Inferencer:
             noise_scaled,
             sigmas,
             extra_args=extra_args,
-            callback=callback
+            callback=callback,
         )
         latent = SD3LatentFormat().process_out(latent)
         self.sd3.model = self.sd3.model.cpu()
 
-        callback(latent, 4, True, message="Sampling done")
+        callback(latent, 4, False, message="Sampling done")
         return latent
 
     def vae_encode(
@@ -414,7 +424,6 @@ class SD3Inferencer:
         return latent
 
     def vae_decode(self, latent) -> Image.Image:
-        print("Decoding latent to image...", end='', flush=True)
         latent = latent.cuda()
         self.vae.model = self.vae.model.cuda()
         images = self.vae.model.decode(latent)
@@ -427,7 +436,6 @@ class SD3Inferencer:
             decoded_np = 255.0 * np.moveaxis(image.cpu().numpy(), 0, 2)
             decoded_np = decoded_np.astype(np.uint8)
             image_list.append(Image.fromarray(decoded_np))
-        print("Done")
         return image_list
 
     def _image_to_latent(
@@ -465,7 +473,7 @@ class SD3Inferencer:
         controlnet_cond_image=CONTROLNET_COND_IMAGE,
         init_image=INIT_IMAGE,
         denoise=DENOISE,
-        negative_prompt= [NEG_PROMPT],
+        negative_prompt=[NEG_PROMPT],
         skip_layer_config={},
         callback=None,
     ):
@@ -473,20 +481,17 @@ class SD3Inferencer:
         
         if init_image:
             message = "Denoising input image..."
-            if callback:
-                callback(None, 0, False, message=message)
+            callback(None, 0, False, message=message)
             latent = self._image_to_latent(init_image, width, height)
         else:
             message = "Generating empty latent image..."
-            if callback:
-                callback(None, 0, False, message=message)
+            callback(None, 0, False, message=message)
             latent = self.get_empty_latent(batch_size, width, height, seed, "cpu")
             latent = latent.cuda()
 
         if controlnet_cond_image:
             message = "Encoding controlnet condition image..."
-            if callback:
-                callback(None, 0, False, message=message)
+            callback(None, 0, False, message=message)
             using_2b, control_type = False, 0
             if self.sd3.model.control_model is not None:
                 using_2b = not self.sd3.using_8b_controlnet
@@ -494,13 +499,8 @@ class SD3Inferencer:
             controlnet_cond = self._image_to_latent(
                 controlnet_cond_image, width, height, using_2b, control_type
             )
-        if callback:
-            callback(latent, 1, False, message="Encoding negative prompt...")
-        neg_cond = self.get_cond(negative_prompt, batch_size)
-        
+
         seed_num = None
-        # pbar = tqdm(enumerate(prompts), total=len(prompts), position=0, leave=True)
-        # for i, prompt in pbar:
         if seed_type == "roll":
             seed_num = seed if seed_num is None else seed_num + 1
         elif seed_type == "rand":
@@ -508,9 +508,11 @@ class SD3Inferencer:
         else:
             seed_num = seed
 
-        if callback:
-            callback(latent, 2, False, message="Encoding prompt...")
+        callback(latent, 1, False, message="Encoding prompt...")
         conditioning = self.get_cond(prompts, batch_size)
+
+        callback(latent, 2, False, message="Encoding negative prompt...")
+        neg_cond = self.get_cond(negative_prompt, batch_size)
 
         sampled_latent = self.do_sampling(
             latent,
@@ -525,15 +527,13 @@ class SD3Inferencer:
             skip_layer_config,
             callback,
         )
+        print("Decoding latent image...")
+        image_list = self.vae_decode(sampled_latent)
 
-        if callback:
-            callback(sampled_latent, 5, False, message="Decoding latent image...")
-            # image = self.vae_decode(sampled_latent)
+        # for image in image_list:
+        callback(sampled_latent, 4, False, message="Final latent ready")
+        callback(image_list, 5, True, message="Image ready")
 
-            # save_path = os.path.join(out_dir, f"{i:06d}.png")
-            # self.print(f"Saving to {save_path}")
-            # image.save(save_path)
-            # self.print("Done")
 
 
 CONFIGS = {
@@ -582,110 +582,3 @@ CONFIGS = {
         "sampler": "euler",
     },
 }
-
-
-@torch.no_grad()
-def main(
-    prompt=PROMPT,
-    model=MODEL,
-    out_dir=OUTDIR,
-    postfix=None,
-    seed=SEED,
-    seed_type=SEEDTYPE,
-    sampler=None,
-    steps=None,
-    cfg=None,
-    shift=None,
-    width=WIDTH,
-    height=HEIGHT,
-    controlnet_ckpt=None,
-    controlnet_cond_image=None,
-    vae=VAEFile,
-    init_image=INIT_IMAGE,
-    denoise=DENOISE,
-    skip_layer_cfg=False,
-    verbose=False,
-    model_folder=MODEL_FOLDER,
-    text_encoder_device="cpu",
-    **kwargs,
-):
-    assert not kwargs, f"Unknown arguments: {kwargs}"
-
-    config = CONFIGS.get(os.path.splitext(os.path.basename(model))[0], {})
-    _shift = shift or config.get("shift", 3)
-    _steps = steps or config.get("steps", 50)
-    _cfg = cfg or config.get("cfg", 5)
-    _sampler = sampler or config.get("sampler", "dpmpp_2m")
-
-    if skip_layer_cfg:
-        skip_layer_config = CONFIGS.get(
-            os.path.splitext(os.path.basename(model))[0], {}
-        ).get("skip_layer_config", {})
-        cfg = skip_layer_config.get("cfg", cfg)
-    else:
-        skip_layer_config = {}
-
-    if controlnet_ckpt is not None:
-        controlnet_config = CONFIGS.get(
-            os.path.splitext(os.path.basename(controlnet_ckpt))[0], {}
-        )
-        _shift = shift or controlnet_config.get("shift", shift)
-        _steps = steps or controlnet_config.get("steps", steps)
-        _cfg = cfg or controlnet_config.get("cfg", cfg)
-        _sampler = sampler or controlnet_config.get("sampler", sampler)
-
-    inferencer = SD3Inferencer()
-
-    inferencer.load(
-        model,
-        vae,
-        _shift,
-        controlnet_ckpt,
-        model_folder,
-        text_encoder_device,
-        verbose,
-    )
-
-    if isinstance(prompt, str):
-        if os.path.splitext(prompt)[-1] == ".txt":
-            with open(prompt, "r") as f:
-                prompts = [l.strip() for l in f.readlines()]
-        else:
-            prompts = [prompt]
-
-    sanitized_prompt = re.sub(r"[^\w\-\.]", "_", prompt)
-    out_dir = os.path.join(
-        out_dir,
-        (
-            os.path.splitext(os.path.basename(model))[0]
-            + (
-                "_" + os.path.splitext(os.path.basename(controlnet_ckpt))[0]
-                if controlnet_ckpt is not None
-                else ""
-            )
-        ),
-        os.path.splitext(os.path.basename(sanitized_prompt))[0][:50]
-        + (postfix or datetime.datetime.now().strftime("_%Y-%m-%dT%H-%M-%S")),
-    )
-
-    os.makedirs(out_dir, exist_ok=False)
-
-    inferencer.gen_image(
-        prompts,
-        width,
-        height,
-        _steps,
-        _cfg,
-        _sampler,
-        seed,
-        seed_type,
-        out_dir,
-        controlnet_cond_image,
-        init_image,
-        denoise,
-        skip_layer_config,
-    )
-
-
-if __name__ == "__main__":
-    fire.Fire(main)
