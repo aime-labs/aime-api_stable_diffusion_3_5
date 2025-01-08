@@ -2,18 +2,17 @@
 
 import math
 import re
+from typing import Tuple
 
 import einops
-from safetensors import safe_open
-import torch
-from PIL import Image
-from tqdm import tqdm
 import numpy as np
+import torch
 import torch.nn as nn
-
 from dit_embedder import ControlNetEmbedder
 from mmditx import MMDiTX
-from typing import Tuple
+from PIL import Image
+from safetensors import safe_open
+from tqdm import tqdm
 
 #################################################################################################
 ### MMDiT Model Wrapping
@@ -133,7 +132,9 @@ class BaseModel(torch.nn.Module):
             hidden_size = 64 * depth
             num_heads = depth
             head_dim = hidden_size // num_heads
-            pooled_projection_size = control_model_ckpt.get_tensor('time_text_embed.text_embedder.linear_1.weight').shape[1]
+            pooled_projection_size = control_model_ckpt.get_tensor(
+                "time_text_embed.text_embedder.linear_1.weight"
+            ).shape[1]
             if verbose:
                 print(
                     f"Initializing ControlNetEmbedder with {n_controlnet_layers} layers, y_in of {pooled_projection_size}"
@@ -150,7 +151,9 @@ class BaseModel(torch.nn.Module):
                 dtype=dtype,
             )
 
-    def apply_model(self, x, sigma, c_crossattn=None, y=None, skip_layers=[], controlnet_cond=None):
+    def apply_model(
+        self, x, sigma, c_crossattn=None, y=None, skip_layers=[], controlnet_cond=None
+    ):
         dtype = self.get_dtype()
         timestep = self.model_sampling.timestep(sigma).float()
         controlnet_hidden_states = None
@@ -161,11 +164,13 @@ class BaseModel(torch.nn.Module):
 
             if not self.control_model.using_8b_controlnet:
                 y_cond = self.diffusion_model.y_embedder(y)
-            
+
             x_controlnet = x
             if self.control_model.using_8b_controlnet:
                 hw = x.shape[-2:]
-                x_controlnet = self.diffusion_model.x_embedder(x) + self.diffusion_model.cropped_pos_embed(hw)
+                x_controlnet = self.diffusion_model.x_embedder(
+                    x
+                ) + self.diffusion_model.cropped_pos_embed(hw)
             controlnet_hidden_states = self.control_model(
                 x_controlnet, controlnet_cond, y_cond, 1, sigma.to(torch.float32)
             )
@@ -309,10 +314,12 @@ class SD3LatentFormat:
 
             latent_image = x.permute(1, 2, 0).cpu() @ factors
 
-            latents_ubyte = (((latent_image + 1) / 2)
-                            .clamp(0, 1)  # change scale from -1..1 to 0..1
-                            .mul(0xFF)  # to 0..255
-                            .byte()).cpu()
+            latents_ubyte = (
+                ((latent_image + 1) / 2)
+                .clamp(0, 1)  # change scale from -1..1 to 0..1
+                .mul(0xFF)  # to 0..255
+                .byte()
+            ).cpu()
             image_list.append(Image.fromarray(latents_ubyte.numpy()))
         return image_list
 
@@ -346,8 +353,7 @@ def sample_euler(model, x, sigmas, extra_args=None, callback=None):
         dt = sigmas[i + 1] - sigma_hat
         # Euler method
         x = x + d * dt
-        if callback:
-            callback(x, i + 1, False)
+        callback(x, i + 1, False)
     return x
 
 
@@ -372,8 +378,7 @@ def sample_dpmpp_2m(model, x, sigmas, extra_args=None, callback=None):
             denoised_d = (1 + 1 / (2 * r)) * denoised - (1 / (2 * r)) * old_denoised
             x = (sigma_fn(t_next) / sigma_fn(t)) * x - (-h).expm1() * denoised_d
         old_denoised = denoised
-        if callback:
-            callback(x, i + 1, False)
+        callback(x, i + 1, False)
     return x
 
 
@@ -745,4 +750,3 @@ class SDVAE(torch.nn.Module):
         logvar = torch.clamp(logvar, -30.0, 20.0)
         std = torch.exp(0.5 * logvar)
         return mean + std * torch.randn_like(mean)
-
