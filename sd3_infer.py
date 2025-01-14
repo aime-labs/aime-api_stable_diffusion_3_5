@@ -158,7 +158,6 @@ class SD3:
     def __init__(
         self, model, shift, control_model_file=None, verbose=False, device="cpu"
     ):
-
         # NOTE 8B ControlNets were trained with a slightly different forward pass and conditioning,
         # so this is a flag to enable that logic.
         self.using_8b_controlnet = False
@@ -254,7 +253,6 @@ MODEL_FOLDER = ""
 
 
 class SD3Inferencer:
-
     def __init__(self):
         self.verbose = False
 
@@ -392,8 +390,6 @@ class SD3Inferencer:
         )
         latent = SD3LatentFormat().process_out(latent)
         self.sd3.model = self.sd3.model.cpu()
-
-        callback(latent, 4, False, message="Sampling done")
         return latent
 
     def vae_encode(
@@ -416,11 +412,6 @@ class SD3Inferencer:
         latent = self.vae.model.encode(image_torch).cpu()
         self.vae.model = self.vae.model.cpu()
         self.print("Encoded")
-        return latent
-
-    def vae_encode_tensor(self, tensor: torch.Tensor) -> torch.Tensor:
-        tensor = tensor.unsqueeze(0)
-        latent = SD3LatentFormat().process_in(latent)
         return latent
 
     def vae_decode(self, latent) -> Image.Image:
@@ -451,12 +442,13 @@ class SD3Inferencer:
         elif isinstance(image, Image.Image):  # If `image` is already a PIL Image
             image_data = image
         else:
-            raise ValueError("Unsupported image input type. Expected file path or PIL Image.")
+            raise ValueError(
+                "Unsupported image input type. Expected file path or PIL Image."
+            )
         image_data = image_data.resize((width, height), Image.LANCZOS)
         latent = self.vae_encode(image_data, using_2b_controlnet, controlnet_type)
         latent = SD3LatentFormat().process_in(latent)
         return latent
-
 
     def gen_image(
         self,
@@ -478,7 +470,7 @@ class SD3Inferencer:
         callback=None,
     ):
         controlnet_cond = None
-        
+
         if init_image:
             message = "Denoising input image..."
             callback(None, 0, False, message=message)
@@ -527,58 +519,5 @@ class SD3Inferencer:
             skip_layer_config,
             callback,
         )
-        print("Decoding latent image...")
         image_list = self.vae_decode(sampled_latent)
-
-        # for image in image_list:
-        callback(sampled_latent, 4, False, message="Final latent ready")
-        callback(image_list, 5, True, message="Image ready")
-
-
-
-CONFIGS = {
-    "sd3_medium": {
-        "shift": 1.0,
-        "steps": 50,
-        "cfg": 5.0,
-        "sampler": "dpmpp_2m",
-    },
-    "sd3.5_medium": {
-        "shift": 3.0,
-        "steps": 50,
-        "cfg": 5.0,
-        "sampler": "dpmpp_2m",
-        "skip_layer_config": {
-            "scale": 2.5,
-            "start": 0.01,
-            "end": 0.20,
-            "layers": [7, 8, 9],
-            "cfg": 4.0,
-        },
-    },
-    "sd3.5_large": {
-        "shift": 3.0,
-        "steps": 40,
-        "cfg": 4.5,
-        "sampler": "dpmpp_2m",
-    },
-    "sd3.5_large_turbo": {"shift": 3.0, "cfg": 1.0, "steps": 4, "sampler": "euler"},
-    "sd3.5_large_controlnet_blur": {
-        "shift": 3.0,
-        "steps": 60,
-        "cfg": 3.5,
-        "sampler": "euler",
-    },
-    "sd3.5_large_controlnet_canny": {
-        "shift": 3.0,
-        "steps": 60,
-        "cfg": 3.5,
-        "sampler": "euler",
-    },
-    "sd3.5_large_controlnet_depth": {
-        "shift": 3.0,
-        "steps": 60,
-        "cfg": 3.5,
-        "sampler": "euler",
-    },
-}
+        callback(image_list, True, message="Image ready")
