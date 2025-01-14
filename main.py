@@ -167,7 +167,6 @@ def main():
             print(f'Processing job {job_data.get("job_id")}...', end="", flush=True)
 
             init_image = job_data.get("image")
-            print(f"Job Data: {job_data}", end="", flush=True)
             batch_size = job_data.get("num_samples", 1)
             if init_image:
                 if not isinstance(init_image, str):
