@@ -3,6 +3,7 @@ import base64
 import datetime
 import io
 import random
+import time
 from pathlib import Path
 
 import numpy as np
@@ -22,10 +23,17 @@ class ProcessOutputCallback:
         self.api_worker = api_worker
         self.inferencer = inferencer
         self.model_name = model_name
+        self.arrival_time = None
         self.job_data = None
 
     def process_output(
-        self, latent_image, progress_step=100, finished=True, error=None, message=None
+        self,
+        latent_image,
+        progress_step=100,
+        finished=True,
+        error=None,
+        message=None,
+        preprocessing_duration=None,
     ):
         if error:
             print("error")
@@ -34,7 +42,12 @@ class ProcessOutputCallback:
                 (np.random.rand(1024, 1024, 3) * 255).astype(np.uint8)
             )
             self.api_worker.send_job_results(
-                {"images": [image], "error": error, "model_name": self.model_name}
+                {
+                    "images": [image],
+                    "error": error,
+                    "model_name": self.model_name,
+                    "job_id": self.job_data.get("job_id"),
+                }
             )
             self.job_data = None
             return
@@ -43,14 +56,12 @@ class ProcessOutputCallback:
                 step_factor = (
                     self.job_data.get("denoise") if self.job_data.get("image") else 1
                 )
-                total_steps = int(self.job_data.get("steps") * step_factor) + 3
-                progress_info = round((progress_step) * 100 / total_steps)
+                # total_steps = int(self.job_data.get("steps") * step_factor) + 3
+                progress_info = int(progress_step * 100)
 
                 if self.api_worker.progress_data_received:
                     progress_data = {"progress_message": message}
-                    if isinstance(
-                        latent_image, torch.Tensor
-                    ):  # Ensure it's a latent tensor
+                    if isinstance(latent_image, torch.Tensor):
                         if self.job_data.get("provide_progress_images") == "decoded":
                             progress_data["progress_images"] = (
                                 self.inferencer.vae_decode(
@@ -76,8 +87,16 @@ class ProcessOutputCallback:
                     image_list = [latent_image]
 
                 self.api_worker.send_progress(100, None, job_data=self.job_data or {})
+                finished_time = time.time()
                 self.api_worker.send_job_results(
-                    {"images": image_list, "model_name": self.model_name}
+                    {
+                        "images": image_list,
+                        "model_name": self.model_name,
+                        "job_id": self.job_data.get("job_id"),
+                        "finished_time": finished_time,
+                        "arrival_time": self.arrival_time,
+                        "preprocessing_duration": preprocessing_duration,
+                    }
                 )
                 self.job_data = None
 
@@ -164,8 +183,8 @@ def main():
     while True:
         try:
             job_data = api_worker.job_request()
-            print(f'Processing job {job_data.get("job_id")}...', end="", flush=True)
-
+            callback.arrival_time = time.time()
+            print(f"Processing job {job_data.get('job_id')}...", end="", flush=True)
             init_image = job_data.get("image")
             batch_size = job_data.get("num_samples", 1)
             if init_image:
@@ -192,7 +211,6 @@ def main():
                 negative_prompt=job_data.get("negative_prompt"),
                 callback=callback.process_output,
             )
-            print("Done")
 
         except ValueError as exc:
             print("Error:", exc)

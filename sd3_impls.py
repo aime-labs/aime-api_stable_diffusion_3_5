@@ -353,7 +353,8 @@ def sample_euler(model, x, sigmas, extra_args=None, callback=None):
         dt = sigmas[i + 1] - sigma_hat
         # Euler method
         x = x + d * dt
-        callback(x, i+3, False)
+        if callback is not None:
+            callback(x, i, False)
     return x
 
 
@@ -378,7 +379,8 @@ def sample_dpmpp_2m(model, x, sigmas, extra_args=None, callback=None):
             denoised_d = (1 + 1 / (2 * r)) * denoised - (1 / (2 * r)) * old_denoised
             x = (sigma_fn(t_next) / sigma_fn(t)) * x - (-h).expm1() * denoised_d
         old_denoised = denoised
-        callback(x, i+3, False)
+        if callback is not None:
+            callback(x, i, False)
     return x
 
 
