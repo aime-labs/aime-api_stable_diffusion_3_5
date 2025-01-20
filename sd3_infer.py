@@ -13,6 +13,7 @@ import os
 import pickle
 import re
 import time
+from operator import call
 
 import fire
 import numpy as np
@@ -290,7 +291,9 @@ class SD3Inferencer:
         self.vae = VAE(vae or model)
         print("Models loaded.")
 
-    def get_empty_latent(self, batch_size, width, height, seed, device="cuda"):
+    def get_empty_latent(
+        self, batch_size, width, height, seed, device="cuda", callback=None
+    ):
         self.print("Prep an empty latent...")
         shape = (batch_size, 16, height // 8, width // 8)
         latents = torch.zeros(shape, device=device)
@@ -324,7 +327,6 @@ class SD3Inferencer:
         ).to(latent.dtype)
 
     def get_cond(self, prompt, num_samples):
-        self.print("Encode prompt...")
         tokens = self.tokenizer.tokenize_with_weights(prompt)
         l_out, l_pooled = self.clip_l.model.encode_token_weights(tokens["l"])
         g_out, g_pooled = self.clip_g.model.encode_token_weights(tokens["g"])
@@ -358,7 +360,7 @@ class SD3Inferencer:
         skip_layer_config={},
         callback=None,
     ) -> torch.Tensor:
-        callback(latent, 3, False, message="Sampling...")
+        callback(latent, 0.15, False, message="Sampling...")
         latent = latent.half().cuda()
         self.sd3.model = self.sd3.model.cuda()
         noise = self.get_noise(seed, latent).cuda()
@@ -386,8 +388,9 @@ class SD3Inferencer:
             noise_scaled,
             sigmas,
             extra_args=extra_args,
-            callback=callback,
+            callback=lambda x, i, f: callback(x, 0.2 + (i / len(sigmas)) * 0.7, f),
         )
+        callback(latent, 0.90, False, message="Sampled")
         latent = SD3LatentFormat().process_out(latent)
         self.sd3.model = self.sd3.model.cpu()
         return latent
@@ -414,7 +417,7 @@ class SD3Inferencer:
         self.print("Encoded")
         return latent
 
-    def vae_decode(self, latent) -> Image.Image:
+    def vae_decode(self, latent, callback=None) -> Image.Image:
         latent = latent.cuda()
         self.vae.model = self.vae.model.cuda()
         images = self.vae.model.decode(latent)
@@ -427,6 +430,7 @@ class SD3Inferencer:
             decoded_np = 255.0 * np.moveaxis(image.cpu().numpy(), 0, 2)
             decoded_np = decoded_np.astype(np.uint8)
             image_list.append(Image.fromarray(decoded_np))
+            callback(image_list, 0.95, False, message="Decoding latent...")
         return image_list
 
     def _image_to_latent(
@@ -470,20 +474,21 @@ class SD3Inferencer:
         callback=None,
     ):
         controlnet_cond = None
-
+        preprocessing_start = time.time()
+        callback(None, 0.0, False, message="Preparing to generate image...")
         if init_image:
             message = "Denoising input image..."
-            callback(None, 0, False, message=message)
+            callback(None, 0.02, False, message=message)
             latent = self._image_to_latent(init_image, width, height)
         else:
             message = "Generating empty latent image..."
-            callback(None, 0, False, message=message)
+            callback(None, 0.02, False, message=message)
             latent = self.get_empty_latent(batch_size, width, height, seed, "cpu")
             latent = latent.cuda()
 
         if controlnet_cond_image:
             message = "Encoding controlnet condition image..."
-            callback(None, 0, False, message=message)
+            callback(None, 0.05, False, message=message)
             using_2b, control_type = False, 0
             if self.sd3.model.control_model is not None:
                 using_2b = not self.sd3.using_8b_controlnet
@@ -500,12 +505,12 @@ class SD3Inferencer:
         else:
             seed_num = seed
 
-        callback(latent, 1, False, message="Encoding prompt...")
+        callback(latent, 0.05, False, message="Encoding prompt...")
         conditioning = self.get_cond(prompts, batch_size)
 
-        callback(latent, 2, False, message="Encoding negative prompt...")
+        callback(latent, 0.1, False, message="Encoding negative prompt...")
         neg_cond = self.get_cond(negative_prompt, batch_size)
-
+        preprocessing_duration = time.time() - preprocessing_start
         sampled_latent = self.do_sampling(
             latent,
             seed_num,
@@ -519,5 +524,12 @@ class SD3Inferencer:
             skip_layer_config,
             callback,
         )
-        image_list = self.vae_decode(sampled_latent)
-        callback(image_list, True, message="Image ready")
+        callback(None, 0.97, False, message="Decoding latent...")
+        image_list = self.vae_decode(sampled_latent, callback)
+        callback(
+            image_list,
+            1.0,
+            True,
+            message="Image ready",
+            preprocessing_duration=preprocessing_duration,
+        )
