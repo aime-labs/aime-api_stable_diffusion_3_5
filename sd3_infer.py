@@ -13,7 +13,6 @@ import os
 import pickle
 import re
 import time
-from operator import call
 
 import fire
 import numpy as np
