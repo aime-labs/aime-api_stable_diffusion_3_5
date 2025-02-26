@@ -71,12 +71,12 @@ pip install -r /workspace/aime-api_stable_diffusion_3_5/requirements.txt
 To run Stable Diffusion 3.5 as HTTP/HTTPS API with [AIME API Server](https://github.com/aime-team/aime-api-server) start the chat command with following command line:
 
 ```sh
-mlc-open sd3.5
+mlc-open sd3-5
 
 python3 /workspace/aime-api_stable_diffusion_3_5/main.py --api_server <url to API server>
 ```
 
-It will start Stable Diffusion 3 as worker, waiting for job request through the AIME API Server.
+It will start Stable Diffusion 3.5 as worker, waiting for job request through the AIME API Server.
 
 
 ## File Guide
