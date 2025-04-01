@@ -121,8 +121,8 @@ def load_flags():
     parser.add_argument(
         "--model_dir",
         type=str,
-        default="/data/stable-diffusion-3.5-large/",
-        help="Destination of model weigths",
+        default=None,
+        help="Destination of model weights",
     )
     parser.add_argument(
         "--out_dir", type=str, default="./output", help="Destination of output images"
@@ -135,7 +135,11 @@ def load_flags():
         help="API server worker auth key",
     )
 
-    return parser.parse_args()
+    args = parser.parse_args()   
+    if args.model_dir is None:
+        args.model_dir = str(Path(args.model).parent)
+            
+    return args
 
 
 def convert_base64_string_to_image(base64_string, width, height):
