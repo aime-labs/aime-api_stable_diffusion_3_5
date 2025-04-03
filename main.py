@@ -96,6 +96,10 @@ class ProcessOutputCallback:
                         "finished_time": finished_time,
                         "arrival_time": self.arrival_time,
                         "preprocessing_duration": preprocessing_duration,
+                        "metrics": {
+                            "out_num_images": len(image_list),
+                            "out_resolution": (self.job_data.get("width"), self.job_data.get("height"))
+                        }
                     }
                 )
                 self.job_data = None
@@ -189,7 +193,9 @@ def main():
             job_data = api_worker.job_request()
             callback.arrival_time = time.time()
             print(f"Processing job {job_data.get('job_id')}...", end="", flush=True)
+            
             init_image = job_data.get("image")
+
             batch_size = job_data.get("num_samples", 1)
             if init_image:
                 if not isinstance(init_image, str):
